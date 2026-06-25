@@ -1,0 +1,2646 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>strobe 重心解析ツール（ストロボ残像対応版）</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    .header {
+      margin-bottom: 12px;
+    }
+    .title-line {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .main-title {
+      font-size: 28px;
+      font-weight: bold;
+      color: #1a1a1a;
+      margin: 0;
+    }
+    .version {
+      font-size: 16px;
+      color: #6b7280;
+      font-style: italic;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #6b7280;
+      margin: 0;
+    }
+    #saveImgDialog, #calibDialog, #continueDialog {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .dialogInner {
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      min-width: 280px;
+      text-align: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .dialogInner button {
+      margin: 8px;
+      padding: 6px 16px;
+    }
+    #calibSelect, #calibCustom {
+      margin-top: 8px;
+    }
+    #canvas {
+      border: 2px solid #ccc;
+      display: block;
+      max-width: 100%;
+      background-color: #f5f5f5;
+      margin: 0;
+    }
+    .file-input-wrapper {
+      position: relative;
+      display: inline-block;
+      margin-right: 10px;
+    }
+    .file-input-wrapper input[type="file"] {
+      position: absolute;
+      left: -9999px;
+    }
+    .file-input-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 12px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      height: 32px;
+      box-sizing: border-box;
+    }
+    .file-input-label:hover {
+      background: #f5f5f5;
+    }
+    .file-name-display {
+      display: inline-block;
+      margin-left: 8px;
+      color: #666;
+      font-size: 14px;
+    }
+    button#prevRectButton, button#nextRectButton, button#finishButton {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 12px;
+      font-size: 14px;
+      height: 32px;
+      box-sizing: border-box;
+    }
+    #flipImageButton {
+      position: absolute;
+      top: calc(10px + 1mm);
+      left: 10px;
+      padding: 6px 12px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      height: 32px;
+      line-height: 20px;
+      box-sizing: border-box;
+      z-index: 100;
+    }
+    #flipImageButton:hover {
+      background: #f5f5f5;
+    }
+    #canvasContainer {
+      position: relative;
+      display: inline-block;
+    }
+  </style>
+</head>
+<body>
+<div class="header">
+  <div class="title-line">
+    <h1 class="main-title">Running Long Jump COM Analysis</h1>
+    <span class="version">v1.0 Beta</span>
+  </div>
+  <p class="subtitle">- Center of Mass Analysis in Strobe Image using Pose Estimation -</p>
+</div>
+
+<h3 id="workflowStatus" style="font-size: 14px; margin-top: 0; margin-bottom: 8px;">
+  <span id="stepHorizontal" style="color: #2563eb;">Horizontal adjustment</span> →
+  <span id="stepCalibration" style="color: #2563eb;">Calibration</span> →
+  <span id="stepRectangle" style="color: #2563eb;">Rectangle range determination</span> →
+  <span id="stepJoint" style="color: #2563eb;">Joint coordinate extraction & correction</span> →
+  <span id="stepFinish" style="color: #2563eb;">Finish</span>
+</h3>
+
+<div class="file-input-wrapper">
+  <input type="file" id="fileInput" accept="image/*">
+  <label for="fileInput" class="file-input-label">Select a file</label>
+  <span id="fileNameDisplay" class="file-name-display">No file</span>
+</div>
+<button id="prevRectButton" style="display:none;">Back</button>
+<button id="nextRectButton" style="display:none;">Next (Enter)</button>
+<button id="finishButton" style="display:none;">Finish</button>
+<br>
+<div id="canvasContainer" style="margin-top: 3mm;">
+  <button id="flipImageButton" style="display:none;">Flip image</button>
+  <canvas id="canvas"></canvas>
+</div>
+
+<!-- 画像保存ダイアログ -->
+<div id="saveImgDialog">
+  <div class="dialogInner">
+    <p>Save the image including the trajectory of the center of mass?</p>
+    <button id="saveImgYes">OK</button>
+    <button id="saveImgCancel">Cancel</button>
+  </div>
+</div>
+
+<!-- 継続確認ダイアログ -->
+<div id="continueDialog">
+  <div class="dialogInner">
+    <p style="font-weight: bold; margin-bottom: 15px;">Select an operation</p>
+    <button id="continueNewAnalysis" style="background: #f3f4f6; color: #1f2937; border: 2px solid #d1d5db; font-weight: 500;">New COM Extraction</button>
+    <button id="continueExit" style="background: #f3f4f6; color: #1f2937; border: 2px solid #d1d5db; font-weight: 500;">Close</button>
+  </div>
+</div>
+
+<!-- 物理パラメータ入力ダイアログ -->
+<div id="physicsParamsDialog" style="position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 1000;">
+  <div class="dialogInner" style="max-width: 450px;">
+    <h3 style="margin-top: 0;">Input Parameters for Physics Analysis</h3>
+    <div style="text-align: left; margin: 15px 0;">
+      <label style="display: block; margin-bottom: 5px;">Interval of afterimages (s):</label>
+      <input id="frameIntervalInput" type="number" step="0.01" min="0.01" value="0.12" style="width: 100%; padding: 5px; box-sizing: border-box;">
+    </div>
+    <div style="text-align: left; margin: 15px 0;">
+      <label style="display: block; margin-bottom: 5px;">Last number of afterimage just before takeoff:</label>
+      <input id="groundedFrameInput" type="number" step="1" min="1" value="1" style="width: 100%; padding: 5px; box-sizing: border-box;">
+      <p style="font-size: 12px; color: #666; margin-top: 5px;">Enter the afterimage number that is still grounded before takeoff.</p>
+    </div>
+    <button id="physicsParamsOk">Calculate</button>
+    <button id="physicsParamsCancel">Cancel</button>
+  </div>
+</div>
+
+<!-- 物理パラメータ結果表示ダイアログ -->
+<div id="physicsResultsDialog" style="position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 1000;">
+  <div class="dialogInner" style="max-width: 500px;">
+    <h3 style="margin-top: 0;">Analysis for Physics Parameters</h3>
+    <div id="physicsResultsContent" style="text-align: left; font-size: 14px; line-height: 1.8; margin: 20px 0;"></div>
+    <button id="physicsResultsOk">OK (Save the CSV Data)</button>
+    <button id="physicsResultsCancel">Cancel</button>
+  </div>
+</div>
+
+<!-- キャリブレーション ダイアログ -->
+<div id="calibDialog">
+  <div class="dialogInner">
+    <p>Please select the distance between the two points (in meters).</p>
+    <select id="calibSelect">
+      <option value="0.5">0.5</option>
+      <option value="1.0" selected>1.0</option>
+      <option value="1.5">1.5</option>
+      <option value="2.0">2.0</option>
+      <option value="2.5">2.5</option>
+      <option value="3.0">3.0</option>
+      <option value="3.5">3.5</option>
+      <option value="4.0">4.0</option>
+      <option value="4.5">4.5</option>
+      <option value="5.0">5.0</option>
+      <option value="custom">Custom</option>
+    </select>
+    <div id="calibCustomArea" style="display:none;">
+      <p>距離を m 単位で入力してください（例: 1.23）</p>
+      <input id="calibCustom" type="number" step="0.01" min="0.01" value="1.00">
+    </div>
+    <br>
+    <button id="calibOk">OK</button>
+  </div>
+</div>
+
+<script>
+console.log('Script started loading');
+console.log('Document readyState:', document.readyState);
+
+// ======================= 著作権表示チェック =======================
+const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+const COPYRIGHT_STORAGE_KEY = "warningLastShown";
+
+function checkAndShowCopyright() {
+  const lastShown = localStorage.getItem(COPYRIGHT_STORAGE_KEY);
+  const now = Date.now().toString();
+
+  if (!lastShown || parseInt(now) - parseInt(lastShown) > THIRTY_DAYS) {
+    alert("CAUTION: This tool is protected by copyright (©2026 A. Azuma. All Rights Reserved). Unauthorized downloading, copying, or redistribution is prohibited.\n注意：本ツールは著作権により保護されています (©2026 A. Azuma. All Rights Reserved)．無断でのダウンロード，複製，再配布を禁じます．");
+    localStorage.setItem(COPYRIGHT_STORAGE_KEY, now);
+  }
+}
+
+// 起動時に著作権表示をチェック
+checkAndShowCopyright();
+
+// 即座にCanvasをテスト
+function testCanvas() {
+  console.log('Testing canvas immediately...');
+  const testCanvas = document.getElementById("canvas");
+  if (testCanvas) {
+    console.log('Canvas found in test');
+    const testCtx = testCanvas.getContext("2d");
+    if (testCtx) {
+      console.log('Context obtained in test');
+      testCanvas.width = 800;
+      testCanvas.height = 600;
+      testCtx.fillStyle = 'red';
+      testCtx.fillRect(10, 10, 100, 100);
+      console.log('Red square drawn in test');
+    } else {
+      console.error('Failed to get context in test');
+    }
+  } else {
+    console.error('Canvas not found in test - DOM may not be ready');
+  }
+}
+
+// DOMが完全に読み込まれてから実行
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('DOM fully loaded via DOMContentLoaded event');
+  testCanvas();
+  setTimeout(() => initializeApp(), 100);
+});
+
+// ページがすでに読み込まれている場合（スクリプトが遅延ロードされた場合）
+if (document.readyState === 'loading') {
+  console.log('Document still loading, waiting for DOMContentLoaded');
+} else {
+  console.log('Document already loaded, initializing immediately');
+  testCanvas();
+  initializeApp();
+}
+
+function initializeApp() {
+  console.log('Initializing application...');
+
+// ======================= A-0: Supabase初期化 =======================
+const urlParams = new URLSearchParams(window.location.search);
+const accessToken = urlParams.get('access_token');
+const refreshToken = urlParams.get('refresh_token');
+
+let supabase = null;
+let currentUserId = null;
+let supabaseInitialized = false;
+
+async function initializeSupabase() {
+  if (!accessToken || !refreshToken) {
+    console.error('認証トークンが見つかりません');
+    return;
+  }
+
+  if (accessToken && refreshToken) {
+    try {
+      if (!window.supabase) {
+        await new Promise((resolve) => {
+          const checkSupabase = setInterval(() => {
+            if (window.supabase) {
+              clearInterval(checkSupabase);
+              resolve();
+            }
+          }, 100);
+        });
+      }
+
+      const { createClient } = window.supabase;
+      supabase = createClient(
+        'https://hxbswzpvzbhmozqpvcvk.supabase.co',
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh4YnN3enB2emJobW96cXB2Y3ZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MTE3MTksImV4cCI6MjA4ODQ4NzcxOX0.fr1UdOyXFHfTf20Gv1Rp8w07HK28mnAwf8CbS_FPWzU'
+      );
+
+      const { data, error } = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken
+      });
+
+      if (error) {
+        console.error('認証エラー:', error);
+      } else if (data.user) {
+        currentUserId = data.user.id;
+        supabaseInitialized = true;
+        console.log('Supabase初期化成功 - ユーザーID:', currentUserId);
+      }
+    } catch (error) {
+      console.error('Supabase初期化エラー:', error);
+    }
+  }
+}
+
+// Supabaseの初期化を待つ
+const supabaseInitPromise = (async () => {
+  await initializeSupabase();
+  console.log('Supabase initialization complete');
+})();
+
+// ======================= A-1: 基本セットアップ =======================
+const canvas = document.getElementById("canvas");
+if (!canvas) {
+  console.error('Canvas element not found');
+  alert('エラー: Canvas要素が見つかりません。ページを再読み込みしてください。');
+} else {
+  console.log('Canvas element found successfully');
+  // デフォルトのCanvasサイズを設定（ブラウザに合わせて調整）
+  const maxWidth = window.innerWidth * 0.9;
+  const maxHeight = window.innerHeight * 0.7;
+  const aspectRatio = 800 / 600; // 4:3のアスペクト比を維持
+
+  if (maxWidth / aspectRatio <= maxHeight) {
+    canvas.width = maxWidth;
+    canvas.height = maxWidth / aspectRatio;
+  } else {
+    canvas.height = maxHeight;
+    canvas.width = maxHeight * aspectRatio;
+  }
+  canvas.style.display = 'block';
+  console.log('Canvas initialized with default size:', canvas.width, 'x', canvas.height);
+}
+const ctx = canvas ? canvas.getContext("2d") : null;
+if (!ctx) {
+  console.error('Could not get 2D context from canvas');
+  alert('エラー: Canvas 2Dコンテキストの取得に失敗しました。');
+} else {
+  console.log('Canvas 2D context obtained successfully');
+  // 背景を描画してCanvasが機能していることを確認
+  ctx.fillStyle = '#f0f0f0';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#999';
+  ctx.font = '20px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Select a picture', canvas.width / 2, canvas.height / 2);
+  console.log('Initial canvas background drawn');
+}
+
+let img = null;
+let originalImg = null;
+let isImageFlipped = false;
+let clickPoints = [];      // 水平補正用 2点
+let detector = null;
+
+// 画像とCanvasのスケール比（Canvas座標から画像座標への変換用）
+let canvasToImageScale = 1.0;
+
+// 現在編集中の残像
+let markers = [];
+let draggingIndex = -1;
+
+// 矩形選択
+let rectSelecting = false;
+let rectStart = null;
+let rectCurrent = null;
+
+// 確定済み残像
+let confirmedPoses = [];
+
+// キャリブレーション
+let calibPoints = [];      // キャリブレーション用 2点
+let metersPerPixel = 1.0;
+let calibDistPx = 1.0;
+let groundYPixel = null;   // 水平補正で設定された地面のY座標（ピクセル）
+
+// モード管理
+// "horizontal"   → 水平補正
+// "calibration"  → キャリブレーション
+// "rect"         → 矩形選択
+// "edit"         → 関節点編集
+let mode = "idle";
+
+// 推定点点滅用
+let blinkOn = true;
+setInterval(() => {
+  blinkOn = !blinkOn;
+  if (typeof redrawCanvas === 'function' && img) {
+    redrawCanvas();
+  }
+}, 500);
+
+// ワークフローステータス更新関数
+function updateWorkflowStatus(currentStep) {
+  const steps = {
+    horizontal: document.getElementById("stepHorizontal"),
+    calibration: document.getElementById("stepCalibration"),
+    rectangle: document.getElementById("stepRectangle"),
+    joint: document.getElementById("stepJoint"),
+    finish: document.getElementById("stepFinish")
+  };
+
+  // 全てのステップを青に戻す
+  Object.values(steps).forEach(step => {
+    if (step) step.style.color = "#2563eb";
+  });
+
+  // 現在のステップを赤にする
+  if (steps[currentStep]) {
+    steps[currentStep].style.color = "red";
+  }
+}
+
+const prevRectButton = document.getElementById("prevRectButton");
+const nextRectButton = document.getElementById("nextRectButton");
+const finishButton   = document.getElementById("finishButton");
+const flipImageButton = document.getElementById("flipImageButton");
+
+// ======================= A-2: MoveNet 読み込み =======================
+async function loadModel() {
+  try {
+    console.log('Loading MoveNet model...');
+    if (!window.poseDetection) {
+      console.error('Pose Detection library not loaded');
+      return;
+    }
+    detector = await poseDetection.createDetector(
+      poseDetection.SupportedModels.MoveNet,
+      { modelType: 'SinglePose.Lightning' }
+    );
+    console.log('MoveNet model loaded successfully');
+  } catch (error) {
+    console.error('Error loading MoveNet model:', error);
+  }
+}
+loadModel();
+
+// ======================= A-3: 画像読み込み =======================
+const fileInput = document.getElementById("fileInput");
+if (!fileInput) {
+  console.error('fileInput element not found');
+} else {
+  console.log('fileInput element found, adding event listener');
+  fileInput.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
+    if (!file) {
+      console.log('No file selected');
+      if (fileNameDisplay) fileNameDisplay.textContent = 'No file';
+      return;
+    }
+
+    console.log('File selected:', file.name);
+    if (fileNameDisplay) fileNameDisplay.textContent = file.name;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      console.log('File loaded successfully');
+      console.log('Data URL length:', event.target.result.length);
+      console.log('Data URL preview:', event.target.result.substring(0, 100));
+
+      const image = new Image();
+
+      image.onload = () => {
+        console.log('Image object loaded successfully');
+        console.log('Image dimensions:', image.width, 'x', image.height);
+        console.log('Image complete:', image.complete);
+        console.log('Image naturalWidth:', image.naturalWidth);
+        console.log('Image naturalHeight:', image.naturalHeight);
+
+        if (!canvas || !ctx) {
+          console.error('Canvas or context not available');
+          alert('キャンバスの初期化に失敗しました。ページを再読み込みしてください。');
+          return;
+        }
+
+        img = image;
+        originalImg = image;
+
+        // ビューポートに合わせてCanvasサイズを計算
+        const headerHeight = document.querySelector('.header').offsetHeight;
+        const workflowHeight = document.getElementById('workflowStatus').offsetHeight;
+        const buttonAreaHeight = 50; // ボタンエリアの概算高さ（ボタン高さ32px + マージン）
+        const bottomMargin = 20; // 下部マージン（約7mm相当）
+        const topMargin = 8; // 上部マージン
+
+        const availableWidth = window.innerWidth - 40; // 左右20pxのマージン
+        const availableHeight = window.innerHeight - headerHeight - workflowHeight - buttonAreaHeight - topMargin - bottomMargin;
+
+        // 画像のアスペクト比を維持しながら最大サイズを計算
+        const imgAspectRatio = img.width / img.height;
+        let canvasWidth, canvasHeight;
+
+        if (availableWidth / imgAspectRatio <= availableHeight) {
+          // 幅が制限要因
+          canvasWidth = availableWidth;
+          canvasHeight = availableWidth / imgAspectRatio;
+        } else {
+          // 高さが制限要因
+          canvasHeight = availableHeight;
+          canvasWidth = availableHeight * imgAspectRatio;
+        }
+
+        // Canvasのサイズを設定（ピクセル単位）
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+
+        // スケール比を保存（Canvas座標から画像座標への変換用）
+        canvasToImageScale = img.width / canvas.width;
+
+        // Canvas要素を確実に表示
+        canvas.style.display = 'block';
+
+        console.log('Canvas size set to:', canvas.width, 'x', canvas.height, 'from image:', img.width, 'x', img.height);
+        console.log('Canvas to image scale:', canvasToImageScale);
+
+        // 画像をCanvasサイズに合わせて描画
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        try {
+          // 画像を拡大縮小してCanvasに描画
+          ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+          console.log('Image drawn to canvas with scaling');
+        } catch (e) {
+          console.error('Error drawing image:', e);
+        }
+
+        // 描画が完了したことを確認
+        try {
+          const imageData = ctx.getImageData(0, 0, Math.min(10, canvas.width), Math.min(10, canvas.height));
+          console.log('Canvas pixel check (first pixel):', imageData.data.slice(0, 4));
+
+          // ピクセルデータが実際に存在するか確認
+          let hasData = false;
+          for (let i = 0; i < imageData.data.length; i++) {
+            if (imageData.data[i] !== 0) {
+              hasData = true;
+              break;
+            }
+          }
+          console.log('Canvas has image data:', hasData);
+
+          if (!hasData) {
+            console.warn('Canvas appears empty after drawing!');
+            // 再描画を試みる
+            ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+          }
+        } catch (e) {
+          console.error('Error checking canvas data:', e);
+        }
+
+        // 状態初期化は描画の後で行う
+        clickPoints = [];
+        markers = [];
+        confirmedPoses = [];
+        calibPoints = [];
+        metersPerPixel = 1.0;
+        groundYPixel = null;
+        isImageFlipped = false;
+        mode = "horizontal";
+
+        // ワークフローステータスを「Horizontal adjustment」に更新
+        updateWorkflowStatus("horizontal");
+
+        prevRectButton.style.display = "inline-block";
+        nextRectButton.style.display = "inline-block";
+        finishButton.style.display   = "inline-block";
+        flipImageButton.style.display = "block";
+
+        // 強制的に再描画
+        requestAnimationFrame(() => {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+          console.log('Image redrawn via requestAnimationFrame');
+        });
+
+        // 描画が安定してから説明を出す
+        setTimeout(() => {
+          // もう一度確認
+          if (!ctx.getImageData(0, 0, 1, 1).data.some(v => v !== 0)) {
+            console.error('Canvas still empty, forcing redraw');
+            ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+          }
+          alert("To perform horizontal correction, please click on two points (horizontal) to define the real-space coordinate system.");
+        }, 200);
+      };
+      image.onerror = (error) => {
+        console.error('Error loading image:', error);
+        console.error('Image src was:', image.src.substring(0, 100));
+        alert('画像の読み込みに失敗しました。');
+      };
+
+      // srcを設定（これで画像の読み込みが開始される）
+      console.log('Setting image.src...');
+      image.src = event.target.result;
+      console.log('image.src set, waiting for onload...');
+    };
+    reader.onerror = (error) => {
+      console.error('Error reading file:', error);
+      alert('ファイルの読み込みに失敗しました。');
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// ======================= A-4: マーカー描画（＋または✕） =======================
+function drawMarker(x, y, color = "red", shape = "plus") {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+
+  if (shape === "cross") {
+    // ✕マーク（対角線）
+    ctx.beginPath();
+    ctx.moveTo(x - 6, y - 6);
+    ctx.lineTo(x + 6, y + 6);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x + 6, y - 6);
+    ctx.lineTo(x - 6, y + 6);
+    ctx.stroke();
+  } else {
+    // ＋マーク（デフォルト）
+    ctx.beginPath();
+    ctx.moveTo(x - 6, y);
+    ctx.lineTo(x + 6, y);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x, y - 6);
+    ctx.lineTo(x, y + 6);
+    ctx.stroke();
+  }
+}
+
+// 後方互換性のためdrawPlus関数を維持
+function drawPlus(x, y, color = "red") {
+  drawMarker(x, y, color, "plus");
+}
+
+// 関節名から色とマーク種別を取得
+function getMarkerStyle(jointName) {
+  const isLeftSide = jointName.startsWith("left_");
+  const isLowerBody = jointName.includes("hip") || jointName.includes("knee") || jointName.includes("ankle");
+
+  const color = isLeftSide ? "lime" : "red";  // 左側は緑色、右側は赤色
+  const shape = isLowerBody ? "cross" : "plus"; // 下肢は✕、上肢は＋
+
+  return { color, shape };
+}
+
+// ======================= A-5: 角度計算と正規化 =======================
+function normalizeAngle(rad) {
+  if (rad > Math.PI / 2)  rad -= Math.PI;
+  if (rad < -Math.PI / 2) rad += Math.PI;
+  return rad;
+}
+
+function calculateAngleAndRotate() {
+  const p1 = clickPoints[0];
+  const p2 = clickPoints[1];
+
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+
+  let theta = Math.atan2(dy, dx);
+  theta = normalizeAngle(theta);
+
+  rotateImage(-theta);
+}
+
+// ======================= A-6: 画像回転 =======================
+function rotatePointAroundCenter(p, angle, cx, cy) {
+  const x = p.x - cx;
+  const y = p.y - cy;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  return {
+    x: cx + x * cos - y * sin,
+    y: cy + x * sin + y * cos
+  };
+}
+
+function rotateImage(angle) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(angle);
+  ctx.drawImage(img, 0, 0, img.width, img.height, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+  ctx.restore();
+
+  const rotatedImg = new Image();
+  rotatedImg.src = canvas.toDataURL();
+
+  const oldClickPoints = clickPoints.map(p => ({...p}));
+
+  rotatedImg.onload = () => {
+    img = rotatedImg;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    clickPoints = oldClickPoints.map(p => rotatePointAroundCenter(p, angle, cx, cy));
+
+    redrawCanvas();
+
+    const ok = confirm("Corrected the horizontal alignment and rotated the image. If that's okay, click the OK button. Calibration will then be performed (Please click on two points on a known scale with your mouse).");
+    if (!ok) {
+      img = originalImg;
+      // Canvasサイズは維持（画像読み込み時に設定したサイズのまま）
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+      clickPoints = [];
+      groundYPixel = null;
+      mode = "horizontal";
+      alert("Please click the two points again for horizontal correction.");
+    } else {
+      // 水平補正後の地面のY座標を設定（2点の平均を使用）
+      groundYPixel = (clickPoints[0].y + clickPoints[1].y) / 2;
+      console.log('✅ 地面のY座標を設定しました: Y =', groundYPixel, 'pixel');
+
+      // キャリブレーション開始時に赤＋は消す
+      clickPoints = [];
+      redrawCanvas();
+      mode = "calibration";
+      calibPoints = [];
+
+      // ワークフローステータスを「Calibration」に更新
+      updateWorkflowStatus("calibration");
+
+      // OKボタンクリック後、追加メッセージなしで直接キャリブレーションに進む
+    }
+  };
+}
+
+// ======================= 共通: 補間関数 =======================
+function midpoint(p1, p2) {
+  if (!p1 || !p2) return null;
+  return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+}
+
+function interpolate(p1, p2, t) {
+  if (!p1 || !p2) return null;
+  return {
+    x: p1.x + (p2.x - p1.x) * t,
+    y: p1.y + (p2.y - p1.y) * t
+  };
+}
+
+// ======================= 欠損補完ロジック =======================
+function fillMissingKeypoints(markers) {
+  const get = name => markers.find(p => p.name === name) || null;
+
+  // 検出された関節のみで仮重心を計算（未抽出点を考慮しない）
+  const existingJoints = markers.filter(m => !m.estimated);
+  let partialComX = 0, partialComY = 0;
+  if (existingJoints.length > 0) {
+    existingJoints.forEach(j => {
+      partialComX += j.x;
+      partialComY += j.y;
+    });
+    partialComX /= existingJoints.length;
+    partialComY /= existingJoints.length;
+  } else {
+    partialComX = canvas.width / 2;
+    partialComY = canvas.height / 2;
+  }
+
+  console.log(`[fillMissingKeypoints] 検出された関節のみの仮重心: (${partialComX.toFixed(1)}, ${partialComY.toFixed(1)})`);
+
+  // 全ての未抽出点を体の上から下、左右なら右を上に配列
+  const allBodyParts = [
+    "right_ear", "left_ear",
+    "right_shoulder", "left_shoulder",
+    "right_elbow", "left_elbow",
+    "right_wrist", "left_wrist",
+    "right_hip", "left_hip",
+    "right_knee", "left_knee",
+    "right_ankle", "left_ankle"
+  ];
+
+  const spacing = 15; // 各未抽出点の間隔
+
+  // 上肢と下肢の未抽出点をそれぞれカウント
+  const missingUpperBody = allBodyParts.filter(name => {
+    const isLowerBody = name.includes("hip") || name.includes("knee") || name.includes("ankle");
+    return !isLowerBody && !get(name);
+  });
+
+  const missingLowerBody = allBodyParts.filter(name => {
+    const isLowerBody = name.includes("hip") || name.includes("knee") || name.includes("ankle");
+    return isLowerBody && !get(name);
+  });
+
+  // 上肢：最下部が重心の少し上（-20）になるように、上方向に配置
+  const upperBodyEndOffset = -20; // 上肢の最下部が重心の少し上
+  let upperYOffset = upperBodyEndOffset - (missingUpperBody.length - 1) * spacing;
+
+  // 下肢：重心の下から適度な間隔（+30）で配置
+  let lowerYOffset = 30;
+
+  allBodyParts.forEach(partName => {
+    if (!get(partName)) {
+      const isLowerBody = partName.includes("hip") || partName.includes("knee") || partName.includes("ankle");
+
+      if (isLowerBody) {
+        const yPos = partialComY + lowerYOffset;
+        markers.push({
+          name: partName,
+          x: partialComX,
+          y: yPos,
+          kind: "joint",
+          estimated: true,
+          needsBlink: true
+        });
+        console.log(`  [下肢未抽出点] ${partName}: (${partialComX.toFixed(1)}, ${yPos.toFixed(1)})`);
+        lowerYOffset += spacing;
+      } else {
+        const yPos = partialComY + upperYOffset;
+        markers.push({
+          name: partName,
+          x: partialComX,
+          y: yPos,
+          kind: "joint",
+          estimated: true,
+          needsBlink: true
+        });
+        console.log(`  [上肢未抽出点] ${partName}: (${partialComX.toFixed(1)}, ${yPos.toFixed(1)})`);
+        upperYOffset += spacing;
+      }
+    }
+  });
+
+  return markers;
+}
+
+// ======================= B: 全身重心計算 =======================
+function computeWholeBodyCOM() {
+  if (!markers || markers.length === 0) return null;
+
+  const getM = name => markers.find(p => p.name === name) || null;
+
+  const left_hip    = getM("left_hip");
+  const right_hip   = getM("right_hip");
+  const left_knee   = getM("left_knee");
+  const right_knee  = getM("right_knee");
+  const left_ankle  = getM("left_ankle");
+  const right_ankle = getM("right_ankle");
+  const left_elbow  = getM("left_elbow");
+  const right_elbow = getM("right_elbow");
+  const left_wrist  = getM("left_wrist");
+  const right_wrist = getM("right_wrist");
+  const left_shoulder  = getM("left_shoulder");
+  const right_shoulder = getM("right_shoulder");
+  const left_ear    = getM("left_ear");
+  const right_ear   = getM("right_ear");
+
+  const head_com = (left_ear && right_ear) ? midpoint(left_ear, right_ear) : null;
+
+  const shoulder_center = (left_shoulder && right_shoulder)
+    ? midpoint(left_shoulder, right_shoulder)
+    : (left_shoulder || right_shoulder);
+  const hip_center = (left_hip && right_hip)
+    ? midpoint(left_hip, right_hip)
+    : (left_hip || right_hip);
+  const trunk_com = (shoulder_center && hip_center)
+    ? interpolate(shoulder_center, hip_center, 0.5)
+    : null;
+
+  const upperarm_com_left  = (left_shoulder && left_elbow) ? interpolate(left_shoulder, left_elbow, 0.43) : null;
+  const upperarm_com_right = (right_shoulder && right_elbow) ? interpolate(right_shoulder, right_elbow, 0.43) : null;
+
+  const forearm_hand_com_left  = (left_elbow && left_wrist) ? interpolate(left_elbow, left_wrist, 0.682) : null;
+  const forearm_hand_com_right = (right_elbow && right_wrist) ? interpolate(right_elbow, right_wrist, 0.682) : null;
+
+  const thigh_com_left  = (left_hip && left_knee) ? interpolate(left_hip, left_knee, 0.433) : null;
+  const thigh_com_right = (right_hip && right_knee) ? interpolate(right_hip, right_knee, 0.433) : null;
+
+  const shank_foot_com_left  = (left_knee && left_ankle) ? interpolate(left_knee, left_ankle, 0.606) : null;
+  const shank_foot_com_right = (right_knee && right_ankle) ? interpolate(right_knee, right_ankle, 0.606) : null;
+
+  const segments = [];
+  const m_head   = 8.1;
+  const m_trunk  = 49.7;
+  const m_upper  = 2.8;
+  const m_fh     = 2.2;
+  const m_thigh  = 10.0;
+  const m_sf     = 6.1;
+
+  if (head_com)               segments.push({ com: head_com,              m: m_head });
+  if (trunk_com)              segments.push({ com: trunk_com,             m: m_trunk });
+  if (upperarm_com_left)      segments.push({ com: upperarm_com_left,     m: m_upper });
+  if (upperarm_com_right)     segments.push({ com: upperarm_com_right,    m: m_upper });
+  if (forearm_hand_com_left)  segments.push({ com: forearm_hand_com_left, m: m_fh });
+  if (forearm_hand_com_right) segments.push({ com: forearm_hand_com_right,m: m_fh });
+  if (thigh_com_left)         segments.push({ com: thigh_com_left,        m: m_thigh });
+  if (thigh_com_right)        segments.push({ com: thigh_com_right,       m: m_thigh });
+  if (shank_foot_com_left)    segments.push({ com: shank_foot_com_left,   m: m_sf });
+  if (shank_foot_com_right)   segments.push({ com: shank_foot_com_right,  m: m_sf });
+
+  if (segments.length === 0) return null;
+
+  let sumMx = 0;
+  let sumMy = 0;
+  let sumM  = 0;
+  segments.forEach(s => {
+    sumMx += s.com.x * s.m;
+    sumMy += s.com.y * s.m;
+    sumM  += s.m;
+  });
+
+  if (sumM === 0) return null;
+
+  return { x: sumMx / sumM, y: sumMy / sumM };
+}
+
+// ======================= Catmull–Rom スプライン =======================
+function drawSpline(ctx, points, color="cyan") {
+  if (points.length < 2) return;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+
+    for (let t = 0; t < 1; t += 0.05) {
+      const tt = t * t;
+      const ttt = tt * t;
+
+      const x =
+        0.5 * (2*p1.x +
+        (-p0.x + p2.x) * t +
+        (2*p0.x - 5*p1.x + 4*p2.x - p3.x) * tt +
+        (-p0.x + 3*p1.x - 3*p2.x + p3.x) * ttt);
+
+      const y =
+        0.5 * (2*p1.y +
+        (-p0.y + p2.y) * t +
+        (2*p0.y - 5*p1.y + 4*p2.y - p3.y) * tt +
+        (-p0.y + 3*p1.y - 3*p2.y + p3.y) * ttt);
+
+      if (i === 0 && t === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+  }
+
+  ctx.stroke();
+}
+
+// ======================= 推定点ラベル =======================
+function labelForKeypoint(name) {
+  switch (name) {
+    case "left_ear": return "L-Ear";
+    case "right_ear": return "R-Ear";
+    case "left_shoulder": return "L-Shoulder";
+    case "right_shoulder": return "R-Shoulder";
+    case "left_elbow": return "L-Elbow";
+    case "right_elbow": return "R-Elbow";
+    case "left_wrist": return "L-Wrist";
+    case "right_wrist": return "R-Wrist";
+    case "left_hip": return "L-Hip";
+    case "right_hip": return "R-Hip";
+    case "left_knee": return "L-Knee";
+    case "right_knee": return "R-Knee";
+    case "left_ankle": return "L-Ankle";
+    case "right_ankle": return "R-Ankle";
+    default: return "";
+  }
+}
+
+// ======================= C: 再描画 =======================
+function redrawCanvas() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (img) ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+
+  // 水平補正用クリック点（赤）
+  if (clickPoints.length > 0) {
+    clickPoints.forEach(p => drawPlus(p.x, p.y, "red"));
+  }
+
+  // キャリブレーション用クリック点（黄）
+  if (calibPoints.length > 0) {
+    calibPoints.forEach(p => drawPlus(p.x, p.y, "yellow"));
+  }
+
+  // 確定済み残像（左側：緑、右側：赤、上肢：＋、下肢：✕、黄色●、番号）
+  confirmedPoses.forEach((pose, idx) => {
+    pose.joints.forEach(j => {
+      const style = getMarkerStyle(j.name);
+      drawMarker(j.x, j.y, "gray", style.shape);
+    });
+    if (pose.com) {
+      ctx.fillStyle = "yellow";
+      ctx.beginPath();
+      ctx.arc(pose.com.x, pose.com.y, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 残像番号（頭よりさらに上）
+    let headY = null;
+    let headX = null;
+    const le = pose.joints.find(j => j.name === "left_ear");
+    const re = pose.joints.find(j => j.name === "right_ear");
+    if (le && re) {
+      headX = (le.x + re.x) / 2;
+      headY = Math.min(le.y, re.y);
+    } else if (le) {
+      headX = le.x;
+      headY = le.y;
+    } else if (re) {
+      headX = re.x;
+      headY = re.y;
+    } else {
+      const ls = pose.joints.find(j => j.name === "left_shoulder");
+      const rs = pose.joints.find(j => j.name === "right_shoulder");
+      if (ls && rs) {
+        headX = (ls.x + rs.x) / 2;
+        headY = Math.min(ls.y, rs.y) - 20;
+      } else if (ls) {
+        headX = ls.x;
+        headY = ls.y - 20;
+      } else if (rs) {
+        headX = rs.x;
+        headY = rs.y - 20;
+      }
+    }
+    if (headX != null && headY != null) {
+      ctx.fillStyle = "yellow";
+      ctx.font = "14px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(String(idx + 1), headX, headY - 30); // 表示用に+1（1から開始）
+      ctx.textAlign = "start";
+    }
+  });
+
+  // 現在編集中の残像（推定点：水色、ラベル付き／非推定点：左側緑、右側赤、上肢＋、下肢✕）
+  markers.forEach(p => {
+    const style = getMarkerStyle(p.name);
+
+    if (p.estimated) {
+      // 未抽出点（推定点）→ 水色、マーク種別適用
+      if (p.needsBlink && blinkOn) {
+        drawMarker(p.x, p.y, "cyan", style.shape);
+      } else if (!p.needsBlink) {
+        drawMarker(p.x, p.y, "cyan", style.shape);
+      }
+      const label = labelForKeypoint(p.name);
+      if (label && (!p.needsBlink || blinkOn)) {
+        ctx.fillStyle = "cyan";
+        ctx.font = "10px sans-serif";
+        ctx.fillText(label, p.x + 8, p.y + 3);
+      }
+    } else {
+      // 検出された点 → 左側緑、右側赤、上肢＋、下肢✕
+      drawMarker(p.x, p.y, style.color, style.shape);
+    }
+  });
+
+  // 現在編集中の COM（黄色●）
+  const com = computeWholeBodyCOM();
+  if (com) {
+    ctx.fillStyle = "yellow";
+    ctx.beginPath();
+    ctx.arc(com.x, com.y, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 矩形選択中
+  if (mode === "rect" && rectSelecting && rectStart && rectCurrent) {
+    const x = Math.min(rectStart.x, rectCurrent.x);
+    const y = Math.min(rectStart.y, rectCurrent.y);
+    const w = Math.abs(rectCurrent.x - rectStart.x);
+    const h = Math.abs(rectCurrent.y - rectStart.y);
+
+    ctx.strokeStyle = "yellow";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+
+    ctx.fillStyle = "rgba(255,255,0,0.2)";
+    ctx.fillRect(x, y, w, h);
+  }
+
+  // COM スプライン描画（水色）
+  const comPoints = confirmedPoses
+    .filter(p => p.com)
+    .map(p => ({ x: p.com.x, y: p.com.y }));
+  drawSpline(ctx, comPoints, "cyan");
+}
+
+// ======================= D: 矩形内だけ MoveNet をかける =======================
+async function detectPoseInRect(rect) {
+  if (!detector || !img) return;
+
+  const off = document.createElement("canvas");
+  off.width = rect.w;
+  off.height = rect.h;
+  const offCtx = off.getContext("2d");
+
+  offCtx.drawImage(
+    img,
+    rect.x, rect.y, rect.w, rect.h,
+    0, 0, rect.w, rect.h
+  );
+
+  const poses = await detector.estimatePoses(off);
+  if (!poses || poses.length === 0) return;
+
+  const kp = poses[0].keypoints;
+  const excludedJoints = ['nose', 'left_eye', 'right_eye'];
+  markers = [];
+  kp.forEach(p => {
+    // 鼻と目を最初から除外
+    if (excludedJoints.includes(p.name)) {
+      return;
+    }
+    if (p.score > 0.3) {
+      markers.push({
+        name: p.name,
+        x: p.x + rect.x,
+        y: p.y + rect.y,
+        kind: "joint",
+        estimated: false,
+        needsBlink: false
+      });
+    }
+  });
+
+  markers = fillMissingKeypoints(markers);
+}
+
+// ======================= E: マウスイベント =======================
+canvas.addEventListener("mousedown", (e) => {
+  const x = e.offsetX;
+  const y = e.offsetY;
+
+  if (mode === "horizontal") {
+    clickPoints.push({ x, y });
+    redrawCanvas();              // 1点目も2点目も即表示
+    if (clickPoints.length === 2) {
+      calculateAngleAndRotate();
+    }
+    return;
+  }
+
+  if (mode === "calibration") {
+    calibPoints.push({ x, y });
+    redrawCanvas();              // 黄色＋も即表示
+    if (calibPoints.length === 2) {
+      const dx = calibPoints[1].x - calibPoints[0].x;
+      const dy = calibPoints[1].y - calibPoints[0].y;
+      calibDistPx = Math.sqrt(dx*dx + dy*dy);
+      // 2点の＋が残った状態でダイアログ
+      openCalibDialog();
+    }
+    return;
+  }
+
+  if (mode === "rect") {
+    rectSelecting = true;
+    rectStart = { x, y };
+    rectCurrent = { x, y };
+    redrawCanvas();
+    return;
+  }
+
+  if (mode === "edit") {
+    draggingIndex = -1;
+    markers.forEach((p, i) => {
+      if (Math.abs(p.x - x) < 10 && Math.abs(p.y - y) < 10) {
+        draggingIndex = i;
+        if (p.estimated) p.needsBlink = false;
+      }
+    });
+  }
+});
+
+canvas.addEventListener("mousemove", (e) => {
+  const x = e.offsetX;
+  const y = e.offsetY;
+
+  if (mode === "rect" && rectSelecting) {
+    rectCurrent = { x, y };
+    redrawCanvas();
+    return;
+  }
+
+  if (mode === "edit" && draggingIndex >= 0) {
+    markers[draggingIndex].x = x;
+    markers[draggingIndex].y = y;
+    if (markers[draggingIndex].estimated) {
+      markers[draggingIndex].needsBlink = false;
+    }
+    redrawCanvas();
+
+    // 拡大ウィンドウにも通知
+    if (zoomWindow && !zoomWindow.closed) {
+      zoomWindow.postMessage({
+        type: 'update-zoom-markers',
+        markers: markers
+      }, '*');
+    }
+  }
+});
+
+canvas.addEventListener("mouseup", async (e) => {
+  const x = e.offsetX;
+  const y = e.offsetY;
+
+  if (mode === "rect" && rectSelecting) {
+    rectSelecting = false;
+
+    const x1 = rectStart.x;
+    const y1 = rectStart.y;
+    const x2 = rectCurrent.x;
+    const y2 = rectCurrent.y;
+
+    const rect = {
+      x: Math.min(x1, x2),
+      y: Math.min(y1, y2),
+      w: Math.abs(x2 - x1),
+      h: Math.abs(y2 - y1)
+    };
+
+    await detectPoseInRect(rect);
+
+    if (markers.length > 0) {
+      mode = "edit";
+      lastSelectedRect = rect; // 拡大ウィンドウ用に矩形を保存
+      console.log('lastSelectedRect updated:', lastSelectedRect);
+    } else {
+      console.log('No markers detected, lastSelectedRect not set');
+    }
+
+    redrawCanvas();
+    return;
+  }
+
+  if (mode === "edit" && draggingIndex >= 0) {
+    draggingIndex = -1;
+  }
+});
+
+canvas.addEventListener("mouseleave", () => {
+  if (mode === "rect") rectSelecting = false;
+  if (mode === "edit") draggingIndex = -1;
+});
+
+// ======================= F: 「次の矩形選択」ボタン =======================
+function confirmCurrentPoseAndStartNext() {
+  if (markers.length > 0) {
+    const com = computeWholeBodyCOM();
+    confirmedPoses.push({
+      joints: JSON.parse(JSON.stringify(markers)),
+      com: com
+    });
+  }
+
+  markers = [];
+  mode = "rect";
+  rectSelecting = false;
+  lastSelectedRect = null; // 次の矩形選択のためにクリア
+
+  // 拡大ウィンドウが開いていれば閉じる
+  if (zoomWindow && !zoomWindow.closed) {
+    zoomWindow.close();
+    zoomWindow = null;
+  }
+
+  redrawCanvas();
+}
+
+nextRectButton.addEventListener("click", confirmCurrentPoseAndStartNext);
+
+// ======================= F2: 「前の矩形再選択」ボタン =======================
+prevRectButton.addEventListener("click", () => {
+  if (confirmedPoses.length === 0) return;
+
+  const last = confirmedPoses.pop();
+  markers = JSON.parse(JSON.stringify(last.joints));
+  mode = "edit";
+  rectSelecting = false;
+
+  redrawCanvas();
+});
+
+// ======================= G: 画像保存ダイアログ関連 =======================
+const saveImgDialog = document.getElementById("saveImgDialog");
+const saveImgYes = document.getElementById("saveImgYes");
+const saveImgCancel = document.getElementById("saveImgCancel");
+
+function openSaveImgDialog() {
+  saveImgDialog.style.display = "flex";
+}
+function closeSaveImgDialog() {
+  saveImgDialog.style.display = "none";
+}
+
+saveImgYes.addEventListener("click", async () => {
+  // COM保存用の画像を作成（重心と軌跡のみ）
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (img) ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+
+  // 確定済み残像の重心のみ描画（関節マークは描画しない）
+  confirmedPoses.forEach((pose, idx) => {
+    if (pose.com) {
+      ctx.fillStyle = "yellow";
+      ctx.beginPath();
+      ctx.arc(pose.com.x, pose.com.y, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 残像番号（頭よりさらに上）
+    let headY = null;
+    let headX = null;
+    const le = pose.joints.find(j => j.name === "left_ear");
+    const re = pose.joints.find(j => j.name === "right_ear");
+    if (le && re) {
+      headX = (le.x + re.x) / 2;
+      headY = Math.min(le.y, re.y);
+    } else if (le) {
+      headX = le.x;
+      headY = le.y;
+    } else if (re) {
+      headX = re.x;
+      headY = re.y;
+    } else {
+      const ls = pose.joints.find(j => j.name === "left_shoulder");
+      const rs = pose.joints.find(j => j.name === "right_shoulder");
+      if (ls && rs) {
+        headX = (ls.x + rs.x) / 2;
+        headY = Math.min(ls.y, rs.y) - 20;
+      } else if (ls) {
+        headX = ls.x;
+        headY = ls.y - 20;
+      } else if (rs) {
+        headX = rs.x;
+        headY = rs.y - 20;
+      }
+    }
+    if (headX != null && headY != null) {
+      ctx.fillStyle = "yellow";
+      ctx.font = "14px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(String(idx + 1), headX, headY - 30);
+      ctx.textAlign = "start";
+    }
+  });
+
+  // 条件1: Physics Parametersが計算されている場合
+  if (calculatedPhysicsParams) {
+    console.log("Drawing physics overlay (spline, takeoff marker, parabola)");
+    // 踏切前のCOM点（1番からユーザー入力番号まで）
+    const beforeTakeoffPoints = confirmedPoses
+      .slice(0, calculatedPhysicsParams.takeoffFrameIndex)
+      .filter(p => p.com)
+      .map(p => ({ x: p.com.x, y: p.com.y }));
+
+    // 踏切時のCOM位置を計算（ピクセル座標に変換）
+    const takeoffComX = calculatedPhysicsParams.takeoffX / metersPerPixel;
+    const takeoffComY = groundYPixel !== null
+      ? groundYPixel - (calculatedPhysicsParams.takeoffComHeight / metersPerPixel)
+      : calculatedPhysicsParams.takeoffComHeight / metersPerPixel;
+
+    // スプライン補完（水色実線）：1番から踏切時のCOM位置まで
+    const splinePoints = [...beforeTakeoffPoints, { x: takeoffComX, y: takeoffComY }];
+    drawSpline(ctx, splinePoints, "cyan");
+
+    // 踏切時のCOM位置に赤い●マークを描画
+    ctx.fillStyle = "red";
+    ctx.beginPath();
+    ctx.arc(takeoffComX, takeoffComY, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 放物線（水色点線）：踏切時のCOM位置から最後のAfterimageまで
+    // 回帰式の係数を使用（相対座標系）
+    const a = calculatedPhysicsParams.regressionA;
+    const b = calculatedPhysicsParams.regressionB;
+    const c = calculatedPhysicsParams.regressionC;
+
+    // 踏切時のX座標（メートル単位）
+    const takeoffXMeters = calculatedPhysicsParams.takeoffX;
+
+    // 最後のAfterimageCOMのX座標（メートル単位）
+    const lastPose = confirmedPoses[confirmedPoses.length - 1];
+    const lastComXMeters = lastPose.com.x * metersPerPixel;
+
+    // 放物線を描画
+    ctx.strokeStyle = "cyan";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]); // 点線
+    ctx.beginPath();
+
+    const numSegments = 100;
+    for (let i = 0; i <= numSegments; i++) {
+      const t = i / numSegments;
+      const xMeters = takeoffXMeters + t * (lastComXMeters - takeoffXMeters);
+      const xRel = xMeters - takeoffXMeters; // 相対座標
+      const yMeters = a * xRel * xRel + b * xRel + c;
+
+      const xPixel = xMeters / metersPerPixel;
+      const yPixel = groundYPixel !== null
+        ? groundYPixel - (yMeters / metersPerPixel)
+        : yMeters / metersPerPixel;
+
+      if (i === 0) {
+        ctx.moveTo(xPixel, yPixel);
+      } else {
+        ctx.lineTo(xPixel, yPixel);
+      }
+    }
+    ctx.stroke();
+    ctx.setLineDash([]); // 点線をリセット
+  } else {
+    console.log("Physics parameters not calculated - skipping spline, takeoff marker, and parabola");
+    // 条件2: Physics Parametersが計算されていない場合
+    // COMマークと番号のみ（線は描かない）
+    // すでに上で描画済み
+  }
+
+  // 日時付きファイル名生成
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mi = String(now.getMinutes()).padStart(2, "0");
+  const filename = `strobe-com_${yyyy}${mm}${dd}-${hh}${mi}.jpg`;
+
+  const link = document.createElement("a");
+  link.href = canvas.toDataURL("image/jpeg");
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  closeSaveImgDialog();
+
+  await saveToDatabase();
+
+  // 次の処理を確認するダイアログを表示
+  showContinueDialog();
+});
+
+saveImgCancel.addEventListener("click", () => {
+  closeSaveImgDialog();
+
+  // 次の処理を確認するダイアログを表示
+  showContinueDialog();
+});
+
+// ======================= H-2: 継続確認ダイアログ =======================
+const continueDialog = document.getElementById("continueDialog");
+const continueNewAnalysis = document.getElementById("continueNewAnalysis");
+const continueExit = document.getElementById("continueExit");
+
+function showContinueDialog() {
+  continueDialog.style.display = "flex";
+}
+
+function closeContinueDialog() {
+  continueDialog.style.display = "none";
+}
+
+// 新しいCOM解析を開始
+continueNewAnalysis.addEventListener("click", () => {
+  closeContinueDialog();
+
+  // 状態をリセットして初期画面に戻る
+  img = null;
+  markers = [];
+  confirmedPoses = [];
+  calibPoints = [];
+  groundYPixel = null;
+  metersPerPixel = 1.0;
+  calibDistPx = 1.0;
+  mode = "idle";
+
+  // ボタンを非表示に
+  prevRectButton.style.display = "none";
+  nextRectButton.style.display = "none";
+  finishButton.style.display = "none";
+
+  // キャンバスを初期サイズにリセット
+  const maxWidth = window.innerWidth * 0.9;
+  const maxHeight = window.innerHeight * 0.7;
+  const aspectRatio = 800 / 600; // 4:3のアスペクト比を維持
+
+  if (maxWidth / aspectRatio <= maxHeight) {
+    canvas.width = maxWidth;
+    canvas.height = maxWidth / aspectRatio;
+  } else {
+    canvas.height = maxHeight;
+    canvas.width = maxHeight * aspectRatio;
+  }
+
+  // キャンバスをクリアして初期メッセージを表示
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#f0f0f0';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#999';
+  ctx.font = '20px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Select a picture', canvas.width / 2, canvas.height / 2);
+
+  // ファイル入力をリセット
+  fileInput.value = "";
+
+  // ファイル名表示をリセット
+  const fileNameDisplay = document.getElementById('fileNameDisplay');
+  if (fileNameDisplay) fileNameDisplay.textContent = 'No file';
+
+  // ワークフローステータスを初期状態（全て青）に戻す
+  const steps = {
+    horizontal: document.getElementById("stepHorizontal"),
+    calibration: document.getElementById("stepCalibration"),
+    rectangle: document.getElementById("stepRectangle"),
+    joint: document.getElementById("stepJoint"),
+    finish: document.getElementById("stepFinish")
+  };
+  Object.values(steps).forEach(step => {
+    if (step) step.style.color = "#2563eb";
+  });
+
+  // 親ウィンドウにデータ更新を通知
+  if (window.opener) {
+    console.log('Sending close-extraction-window message to parent (restart analysis)');
+    window.opener.postMessage('close-extraction-window', '*');
+  }
+});
+
+// COM解析を終了
+continueExit.addEventListener("click", () => {
+  closeContinueDialog();
+
+  // 親ウィンドウにデータ更新を通知してウィンドウを閉じる
+  if (window.opener) {
+    console.log('Sending close-extraction-window message to parent (exit)');
+    window.opener.postMessage('close-extraction-window', '*');
+  }
+
+  // ウィンドウを閉じる
+  console.log('Closing window...');
+  setTimeout(() => {
+    window.close();
+  }, 100);
+});
+
+// ======================= このセクションは initializeApp() 内に移動されました =======================
+
+// ======================= G-2: データベース保存関数 =======================
+async function saveToDatabase() {
+  let errorMessage = '';
+
+  console.log('saveToDatabase called');
+  console.log('supabaseInitialized:', supabaseInitialized);
+  console.log('supabase:', supabase ? 'exists' : 'null');
+  console.log('currentUserId:', currentUserId || 'not set');
+
+  // Supabaseの初期化Promiseを待つ
+  console.log('Waiting for supabaseInitPromise...');
+  await supabaseInitPromise;
+  console.log('supabaseInitPromise completed');
+
+  // 初期化完了後も念のため追加で待機
+  let retries = 0;
+  const maxRetries = 30; // 3秒待つ
+  while (!supabaseInitialized && retries < maxRetries) {
+    console.log(`Waiting for Supabase initialization flag... (${retries + 1}/${maxRetries})`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    retries++;
+  }
+
+  console.log('After waiting:');
+  console.log('supabaseInitialized:', supabaseInitialized);
+  console.log('supabase:', supabase ? 'exists' : 'null');
+  console.log('currentUserId:', currentUserId || 'not set');
+
+  if (!supabase || !currentUserId || !supabaseInitialized) {
+    errorMessage = 'データベースエラー: Supabase認証が初期化されていません。\n\nsupabase: ' + (supabase ? 'OK' : 'NOT INITIALIZED') + '\ncurrentUserId: ' + (currentUserId || 'NOT SET') + '\nsupabaseInitialized: ' + supabaseInitialized;
+    console.error(errorMessage);
+    return;
+  }
+
+  if (confirmedPoses.length === 0) {
+    console.log('No confirmed poses to save');
+    return;
+  }
+
+  try {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mi = String(now.getMinutes()).padStart(2, '0');
+    const title = `COM_${yyyy}${mm}${dd}_${hh}${mi}`;
+
+    const { data: analysisData, error: analysisError } = await supabase
+      .from('analyses')
+      .insert({
+        title: title,
+        user_id: currentUserId,
+        pixel_to_meter_ratio: 1.0 / metersPerPixel,
+        frame_interval_sec: 0.12,
+        image_url: canvas.toDataURL('image/jpeg')
+      })
+      .select()
+      .single();
+
+    if (analysisError) throw analysisError;
+
+    const comPoints = confirmedPoses.map((pose, index) => ({
+      analysis_id: analysisData.id,
+      frame_number: index,
+      x_pixel: pose.com.x,
+      y_pixel: pose.com.y,
+      x_meter: pose.com.x * metersPerPixel,
+      y_meter: groundYPixel !== null ? (groundYPixel - pose.com.y) * metersPerPixel : pose.com.y * metersPerPixel,
+      time_sec: index * 0.12
+    }));
+
+    const { error: pointsError } = await supabase
+      .from('com_points')
+      .insert(comPoints);
+
+    if (pointsError) throw pointsError;
+
+    const allJoints = [];
+    const excludedJoints = ['nose', 'left_eye', 'right_eye'];
+    confirmedPoses.forEach((pose, frameIndex) => {
+      pose.joints.forEach(joint => {
+        // 鼻と目を除外
+        if (excludedJoints.includes(joint.name)) {
+          return;
+        }
+        allJoints.push({
+          analysis_id: analysisData.id,
+          frame_number: frameIndex,
+          joint_name: joint.name,
+          x_pixel: joint.x,
+          y_pixel: joint.y,
+          x_meter: joint.x * metersPerPixel,
+          y_meter: groundYPixel !== null ? (groundYPixel - joint.y) * metersPerPixel : joint.y * metersPerPixel,
+          is_estimated: joint.estimated || false
+        });
+      });
+    });
+
+    const { error: jointsError } = await supabase
+      .from('joints')
+      .insert(allJoints);
+
+    if (jointsError) throw jointsError;
+
+    console.log('✅ データをデータベースに保存しました');
+  } catch (error) {
+    errorMessage = '❌ データベース保存エラー:\n\n' + JSON.stringify(error, null, 2);
+    console.error('Error saving to database:', error);
+  }
+}
+
+// ======================= H: Flip imageボタン =======================
+flipImageButton.addEventListener("click", () => {
+  if (!img) return;
+
+  // 新しいCanvasを作成して画像を左右反転
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = img.width;
+  tempCanvas.height = img.height;
+  const tempCtx = tempCanvas.getContext('2d');
+
+  // 左右反転
+  tempCtx.translate(tempCanvas.width, 0);
+  tempCtx.scale(-1, 1);
+  tempCtx.drawImage(img, 0, 0);
+
+  // 反転した画像を新しいImageオブジェクトとして保存
+  const flippedImage = new Image();
+  flippedImage.onload = () => {
+    img = flippedImage;
+    isImageFlipped = !isImageFlipped;
+
+    // calibPointsのX座標も反転
+    calibPoints = calibPoints.map(p => ({
+      x: canvas.width - p.x,
+      y: p.y
+    }));
+
+    redrawCanvas();
+  };
+  flippedImage.src = tempCanvas.toDataURL();
+});
+
+// ======================= I: 作業終了ボタン =======================
+finishButton.addEventListener("click", async () => {
+  if (markers.length > 0) {
+    const com = computeWholeBodyCOM();
+    confirmedPoses.push({
+      joints: JSON.parse(JSON.stringify(markers)),
+      com: com
+    });
+    markers = [];
+    redrawCanvas();
+  }
+
+  if (confirmedPoses.length === 0) {
+    alert("Center of mass analysis (extraction) has not been performed.");
+    return;
+  }
+
+  // ワークフローステータスを「Finish」に更新
+  updateWorkflowStatus("finish");
+
+  // 物理パラメータ入力ダイアログを開く
+  openPhysicsParamsDialog();
+});
+
+// ======================= J: キャリブレーション ダイアログ =======================
+const calibDialog = document.getElementById("calibDialog");
+const calibSelect = document.getElementById("calibSelect");
+const calibCustomArea = document.getElementById("calibCustomArea");
+const calibCustom = document.getElementById("calibCustom");
+const calibOk = document.getElementById("calibOk");
+
+function openCalibDialog() {
+  calibDialog.style.display = "flex";
+}
+
+function closeCalibDialog() {
+  calibDialog.style.display = "none";
+}
+
+calibSelect.addEventListener("change", () => {
+  if (calibSelect.value === "custom") {
+    calibCustomArea.style.display = "block";
+  } else {
+    calibCustomArea.style.display = "none";
+  }
+});
+
+calibOk.addEventListener("click", () => {
+  let meters = 1.0;
+  const val = calibSelect.value;
+  if (val === "custom") {
+    const v = parseFloat(calibCustom.value);
+    if (!isNaN(v) && v > 0) meters = v;
+  } else {
+    meters = parseFloat(val);
+  }
+  if (isNaN(meters) || meters <= 0) meters = 1.0;
+
+  metersPerPixel = meters / calibDistPx;
+
+  // キャリブレーション完了時に黄色＋を消す
+  calibPoints = [];
+  redrawCanvas();
+
+  closeCalibDialog();
+
+  mode = "rect";
+  rectSelecting = false;
+
+  // Flip imageボタンを非表示
+  flipImageButton.style.display = "none";
+
+  // ワークフローステータスを「Rectangle range determination」と「Joint coordinate extraction & correction」に更新
+  updateWorkflowStatus("rectangle");
+  const stepJoint = document.getElementById("stepJoint");
+  if (stepJoint) stepJoint.style.color = "red";
+
+  alert("Please select the area (rectangle) to extract coordinates.\nThe extracted coordinates (+) can be modified with the mouse.\nIf no further modifications are needed or if modifications are complete, please proceed using the \"Next (Enter)\" button. Press Shift + Enter to enable the zoom function.\nWhen all work is finished, please click the \"Finish\" button.");
+});
+
+// ======================= K: 物理パラメータダイアログ =======================
+const physicsParamsDialog = document.getElementById("physicsParamsDialog");
+const frameIntervalInput = document.getElementById("frameIntervalInput");
+const groundedFrameInput = document.getElementById("groundedFrameInput");
+const physicsParamsOk = document.getElementById("physicsParamsOk");
+const physicsParamsCancel = document.getElementById("physicsParamsCancel");
+
+const physicsResultsDialog = document.getElementById("physicsResultsDialog");
+const physicsResultsContent = document.getElementById("physicsResultsContent");
+const physicsResultsOk = document.getElementById("physicsResultsOk");
+const physicsResultsCancel = document.getElementById("physicsResultsCancel");
+
+let calculatedPhysicsParams = null;
+
+function openPhysicsParamsDialog() {
+  // デフォルト値を設定
+  frameIntervalInput.value = "0.12";
+  groundedFrameInput.value = "1";
+  groundedFrameInput.max = confirmedPoses.length;
+  physicsParamsDialog.style.display = "flex";
+}
+
+function closePhysicsParamsDialog() {
+  physicsParamsDialog.style.display = "none";
+}
+
+function openPhysicsResultsDialog() {
+  physicsResultsDialog.style.display = "flex";
+}
+
+function closePhysicsResultsDialog() {
+  physicsResultsDialog.style.display = "none";
+}
+
+// 物理パラメータを計算
+function calculatePhysicsParameters(frameInterval, groundedFrameIndex) {
+  const g = 9.80665; // 重力加速度 (m/s²)
+
+  // 踏切フレーム（接地していた最後のフレーム）
+  const takeoffFrameIndex = groundedFrameIndex; // 1-based index
+
+  if (takeoffFrameIndex < 1 || takeoffFrameIndex > confirmedPoses.length) {
+    alert("Invalid grounded afterimage number.");
+    return null;
+  }
+
+  // 配列インデックスは0-based
+  const takeoffFrame = confirmedPoses[takeoffFrameIndex - 1];
+
+  if (!takeoffFrame.com) {
+    alert("COM not found for the specified grounded afterimage.");
+    return null;
+  }
+
+  // ユーザー入力より後のフレームのY座標（メートル単位）を収集し、非線形回帰を実行
+  const xData = [];
+  const yData = [];
+  const takeoffPoseIndex = takeoffFrameIndex - 1; // 0-based index
+
+  confirmedPoses.forEach((pose, index) => {
+    // ユーザー入力フレームより後のフレームだけを回帰計算に使用
+    if (pose.com && index > takeoffPoseIndex) {
+      const xMeter = pose.com.x * metersPerPixel;
+      const yMeter = groundYPixel !== null
+        ? (groundYPixel - pose.com.y) * metersPerPixel
+        : pose.com.y * metersPerPixel;
+      xData.push(xMeter);
+      yData.push(yMeter);
+      console.log(`Including afterimage ${index + 1} (0-based index: ${index}) in regression: X=${xMeter.toFixed(3)}m, Y=${yMeter.toFixed(3)}m`);
+    }
+  });
+
+  console.log(`User input afterimage number: ${groundedFrameIndex} (0-based index: ${takeoffPoseIndex})`);
+  console.log(`Total afterimages for regression: ${xData.length}`);
+
+  // 非線形回帰 (Y = aX^2 + bX + c)
+  const n = xData.length;
+
+  // 2次回帰には最低3点必要
+  if (n < 3) {
+    alert("Not enough data points for quadratic regression (need at least 3 airborne frames after the grounded frame).");
+    return null;
+  }
+
+  let sumX = 0, sumX2 = 0, sumX3 = 0, sumX4 = 0;
+  let sumY = 0, sumXY = 0, sumX2Y = 0;
+
+  for (let i = 0; i < n; i++) {
+    const x = xData[i];
+    const y = yData[i];
+    sumX += x;
+    sumX2 += x * x;
+    sumX3 += x * x * x;
+    sumX4 += x * x * x * x;
+    sumY += y;
+    sumXY += x * y;
+    sumX2Y += x * x * y;
+  }
+
+  // 連立方程式を解く（クラメルの公式）
+  const A = [
+    [sumX4, sumX3, sumX2],
+    [sumX3, sumX2, sumX],
+    [sumX2, sumX, n]
+  ];
+  const B = [sumX2Y, sumXY, sumY];
+
+  // 行列式を計算
+  function det3x3(m) {
+    return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+           m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+           m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  }
+
+  const detA = det3x3(A);
+
+  if (Math.abs(detA) < 1e-10) {
+    alert("Cannot perform regression: determinant too small.");
+    return null;
+  }
+
+  // aを求める
+  const A1 = [
+    [B[0], A[0][1], A[0][2]],
+    [B[1], A[1][1], A[1][2]],
+    [B[2], A[2][1], A[2][2]]
+  ];
+  const a = det3x3(A1) / detA;
+
+  // bを求める
+  const A2 = [
+    [A[0][0], B[0], A[0][2]],
+    [A[1][0], B[1], A[1][2]],
+    [A[2][0], B[2], A[2][2]]
+  ];
+  const b = det3x3(A2) / detA;
+
+  // cを求める
+  const A3 = [
+    [A[0][0], A[0][1], B[0]],
+    [A[1][0], A[1][1], B[1]],
+    [A[2][0], A[2][1], B[2]]
+  ];
+  const c = det3x3(A3) / detA;
+
+  // 踏切フレームとその前2フレーム（計3フレーム）を取得
+  if (takeoffPoseIndex < 2) {
+    alert("Cannot calculate takeoff position: need at least 2 frames before the takeoff frame.");
+    return null;
+  }
+
+  const prevFrame1 = confirmedPoses[takeoffPoseIndex - 1];
+  const prevFrame2 = confirmedPoses[takeoffPoseIndex - 2];
+
+  if (!prevFrame1.com || !prevFrame2.com) {
+    alert("COM not found for frames before takeoff.");
+    return null;
+  }
+
+  // 3フレームのCOM-Y座標（メートル単位）を取得
+  const takeoffYMeasured = groundYPixel !== null
+    ? (groundYPixel - takeoffFrame.com.y) * metersPerPixel
+    : takeoffFrame.com.y * metersPerPixel;
+
+  const prevY1Measured = groundYPixel !== null
+    ? (groundYPixel - prevFrame1.com.y) * metersPerPixel
+    : prevFrame1.com.y * metersPerPixel;
+
+  const prevY2Measured = groundYPixel !== null
+    ? (groundYPixel - prevFrame2.com.y) * metersPerPixel
+    : prevFrame2.com.y * metersPerPixel;
+
+  console.log(`Afterimage ${takeoffPoseIndex + 1} COM-Y: ${takeoffYMeasured}`);
+  console.log(`Afterimage ${takeoffPoseIndex} COM-Y: ${prevY1Measured}`);
+  console.log(`Afterimage ${takeoffPoseIndex - 1} COM-Y: ${prevY2Measured}`);
+
+  // 3フレームのCOM-Yの平均を計算
+  const avgComY = (takeoffYMeasured + prevY1Measured + prevY2Measured) / 3;
+  console.log(`Average COM-Y: ${avgComY}`);
+
+  // COM height at takeoff = 平均COM-Y × 1.19 → 平均COM-Y×0.743+0.367
+  const takeoffComHeightM = avgComY * 1.14;
+  console.log(`COM height at takeoff: ${takeoffComHeightM}`);
+
+  // 踏切フレームの実測X座標（メートル単位）
+  const takeoffXMeasured = takeoffFrame.com.x * metersPerPixel;
+
+  // 基準点となるX座標：回帰式 Y = aX^2 + bX + c において Y = takeoffComHeightM となるX座標
+  // aX^2 + bX + (c - takeoffComHeightM) = 0 を解く
+  const discriminant = b * b - 4 * a * (c - takeoffComHeightM);
+
+  if (discriminant < 0) {
+    alert("Cannot calculate reference X coordinate from regression equation.");
+    return null;
+  }
+
+  // 2つの解を計算
+  const x1 = (-b + Math.sqrt(discriminant)) / (2 * a);
+  const x2 = (-b - Math.sqrt(discriminant)) / (2 * a);
+
+  // ユーザー入力フレーム（Afterimage 5）のCOM-X座標
+  const userInputX = takeoffFrame.com.x * metersPerPixel;
+
+  // ユーザー入力フレームのCOM-Xに近い方の解を選ぶ
+  const dist1 = Math.abs(x1 - userInputX);
+  const dist2 = Math.abs(x2 - userInputX);
+  const takeoffX = dist1 < dist2 ? x1 : x2;
+
+  console.log(`User input frame (Afterimage ${takeoffFrameIndex}) COM-X: ${userInputX}`);
+  console.log(`Solution 1: ${x1}, distance: ${dist1}`);
+  console.log(`Solution 2: ${x2}, distance: ${dist2}`);
+  console.log(`Selected takeoff X (COM-X=0): ${takeoffX}`);
+
+  // 回帰係数を相対座標系に変換
+  // 絶対座標系: Y = a*X^2 + b*X + c
+  // 相対座標系 X' = X - takeoffX を代入:
+  // Y = a*(X'+takeoffX)^2 + b*(X'+takeoffX) + c
+  //   = a*X'^2 + 2*a*takeoffX*X' + a*takeoffX^2 + b*X' + b*takeoffX + c
+  //   = a*X'^2 + (2*a*takeoffX + b)*X' + (a*takeoffX^2 + b*takeoffX + c)
+  const aRel = a;
+  const bRel = 2 * a * takeoffX + b;
+  const cRel = a * takeoffX * takeoffX + b * takeoffX + c;
+
+  // 次のフレームが存在するか確認
+  if (takeoffFrameIndex >= confirmedPoses.length) {
+    alert("Need at least one airborne afterimage after takeoff.");
+    return null;
+  }
+
+  // 踏切後の最初の空中フレーム
+  const airborneFrame = confirmedPoses[takeoffFrameIndex];
+
+  if (!airborneFrame.com) {
+    alert("COM not found for the first airborne afterimage.");
+    return null;
+  }
+
+  // 踏切時と空中時のCOM座標（メートル単位）
+  const takeoffY = groundYPixel !== null
+    ? (groundYPixel - takeoffFrame.com.y) * metersPerPixel
+    : takeoffFrame.com.y * metersPerPixel;
+
+  const airborneXMeasured = airborneFrame.com.x * metersPerPixel;
+  const airborneY = groundYPixel !== null
+    ? (groundYPixel - airborneFrame.com.y) * metersPerPixel
+    : airborneFrame.com.y * metersPerPixel;
+
+  // X座標を基準点（takeoffX）からの相対座標に変換
+  const takeoffXRelative = takeoffXMeasured - takeoffX;  // 踏切フレームの基準点からの距離（通常0に近い）
+  const airborneXRelative = airborneXMeasured - takeoffX;  // 空中フレームの基準点からの距離
+
+  // 速度成分を計算（m/s）
+  const vx = (airborneXRelative - takeoffXRelative) / frameInterval;
+  const vy = (airborneY - takeoffY) / frameInterval;
+
+  // 合成速度
+  const velocity = Math.sqrt(vx * vx + vy * vy);
+
+  // 踏切角度（度）
+  const jumpingAngleRad = Math.atan2(vy, vx);
+  const jumpingAngleDeg = jumpingAngleRad * 180 / Math.PI;
+
+  return {
+    takeoffComHeight: takeoffComHeightM,
+    velocity: velocity,
+    jumpingAngle: jumpingAngleDeg,
+    frameInterval: frameInterval,
+    regressionA: aRel,
+    regressionB: bRel,
+    regressionC: cRel,
+    takeoffXCoord: takeoffX,  // 基準点となるX座標
+    takeoffX: takeoffX,  // 踏切時のX座標（メートル単位）
+    takeoffFrameIndex: takeoffFrameIndex  // 踏切フレームのインデックス（1-based）
+  };
+}
+
+physicsParamsOk.addEventListener("click", () => {
+  const frameInterval = parseFloat(frameIntervalInput.value);
+  const groundedFrameNumber = parseInt(groundedFrameInput.value);
+
+  if (isNaN(frameInterval) || frameInterval <= 0) {
+    alert("Please enter a valid frame interval.");
+    return;
+  }
+
+  if (isNaN(groundedFrameNumber) || groundedFrameNumber < 1 || groundedFrameNumber > confirmedPoses.length) {
+    alert("Please enter a valid grounded afterimage number.");
+    return;
+  }
+
+  // 踏切前のCOMデータが3つ揃っているかチェック（ユーザー入力番号とその1つ前、2つ前）
+  const beforeTakeoffCount = groundedFrameNumber >= 3 ? 3 : groundedFrameNumber;
+  const hasSufficientBeforeTakeoff = beforeTakeoffCount === 3;
+
+  // 踏切後（ユーザー入力番号以降、それを含まず）のCOMデータが3つ揃っているかチェック
+  const afterTakeoffCount = confirmedPoses.length - groundedFrameNumber;
+  const hasSufficientAfterTakeoff = afterTakeoffCount >= 3;
+
+  // どちらかの条件を満たさない場合はアラートを表示してCOMデータのみをCSV保存し、画像保存の分岐に進む
+  if (!hasSufficientBeforeTakeoff || !hasSufficientAfterTakeoff) {
+    closePhysicsParamsDialog();
+    alert("The number of COM data is too less. More than 3 afterimages should be targeted for COM extraction before takeoff and during the flight phase, respectively.\nOnly the COM data that has been analysed will be saved in CSV format.");
+
+    // COMデータのみをCSV保存
+    exportCOMOnlyCSV(frameInterval);
+
+    openSaveImgDialog();
+    return;
+  }
+
+  closePhysicsParamsDialog();
+
+  // 物理パラメータを計算
+  const params = calculatePhysicsParameters(frameInterval, groundedFrameNumber);
+
+  if (!params) {
+    // 計算が失敗した場合は古いパラメータをクリア
+    calculatedPhysicsParams = null;
+    return;
+  }
+
+  calculatedPhysicsParams = params;
+
+  // 結果を表示
+  physicsResultsContent.innerHTML = `
+    <p><strong>COM height at takeoff:</strong> ${params.takeoffComHeight.toFixed(3)} m</p>
+    <p><strong>COM Velocity at takeoff:</strong> ${params.velocity.toFixed(2)} m/s</p>
+    <p><strong>COM jumping angle at takeoff:</strong> ${params.jumpingAngle.toFixed(1)}°</p>
+    <p style="margin-top: 15px; font-size: 12px; color: #666;">
+      Interval of afterimages: ${params.frameInterval.toFixed(2)} s
+    </p>
+  `;
+
+  openPhysicsResultsDialog();
+});
+
+physicsParamsCancel.addEventListener("click", () => {
+  closePhysicsParamsDialog();
+  // 画像保存ダイアログを開く
+  openSaveImgDialog();
+});
+
+// 物理パラメータ結果OKボタン（CSV保存へ進む）
+physicsResultsOk.addEventListener("click", () => {
+  closePhysicsResultsDialog();
+
+  // CSV保存処理
+  if (calculatedPhysicsParams) {
+    exportCSV(calculatedPhysicsParams);
+  }
+
+  // 画像保存ダイアログを開く
+  openSaveImgDialog();
+});
+
+// COMデータのみをCSV出力する関数（物理パラメータなし）
+function exportCOMOnlyCSV(frameInterval) {
+  if (!frameInterval || frameInterval <= 0) {
+    console.error("Frame interval is not set");
+    return;
+  }
+
+  // CSVヘッダー
+  let csv = "Afterimage,Time (s),COM-X (m),COM-Y (m)\n";
+
+  // COM座標データ（X座標は絶対値）
+  // COSデータが不足している場合なので、Time (s)列は空欄にする
+  confirmedPoses.forEach((pose, index) => {
+    if (pose.com) {
+      const xMeter = pose.com.x * metersPerPixel;
+      const yMeter = groundYPixel !== null
+        ? (groundYPixel - pose.com.y) * metersPerPixel
+        : pose.com.y * metersPerPixel;
+
+      csv += `${index + 1},,${xMeter.toFixed(3)},${yMeter.toFixed(3)}\n`;
+    }
+  });
+
+  // ファイル名生成
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mi = String(now.getMinutes()).padStart(2, "0");
+  const filename = `longjump-com_${yyyy}${mm}${dd}-${hh}${mi}.csv`;
+
+  // CSVダウンロード
+  const blob = new Blob([csv], { type: "text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  console.log("COM-only CSV exported:", filename);
+}
+
+// CSV出力関数
+function exportCSV(physicsParams) {
+  const frameInterval = physicsParams.frameInterval;
+  const takeoffXCoord = physicsParams.takeoffXCoord;  // 基準点となるX座標
+
+  // CSVヘッダー
+  let csv = "Afterimage,Time (s),COM-X (m),COM-Y (m)\n";
+
+  // COM座標データ（X座標は基準点からの相対値）
+  confirmedPoses.forEach((pose, index) => {
+    if (pose.com) {
+      const timeSec = index * frameInterval;
+      const xMeterAbsolute = pose.com.x * metersPerPixel;
+      const xMeterRelative = xMeterAbsolute - takeoffXCoord;  // 基準点からの相対位置
+      const yMeter = groundYPixel !== null
+        ? (groundYPixel - pose.com.y) * metersPerPixel
+        : pose.com.y * metersPerPixel;
+
+      csv += `${index + 1},${timeSec.toFixed(2)},${xMeterRelative.toFixed(3)},${yMeter.toFixed(3)}\n`;
+    }
+  });
+
+  // 物理パラメータ情報を追加
+  csv += "\n";
+  csv += "Physics Parameters\n";
+  csv += `COM height at takeoff (m),${physicsParams.takeoffComHeight.toFixed(3)}\n`;
+  csv += `COM Velocity at takeoff (m/s),${physicsParams.velocity.toFixed(2)}\n`;
+  csv += `COM jumping angle at takeoff (deg.),${physicsParams.jumpingAngle.toFixed(1)}\n`;
+  csv += `Interval of afterimages (s),${physicsParams.frameInterval.toFixed(2)}\n`;
+  csv += `a of Y=aX^2+bX+c,${physicsParams.regressionA.toExponential(6)}\n`;
+  csv += `b of Y=aX^2+bX+c,${physicsParams.regressionB.toFixed(6)}\n`;
+  csv += `c of Y=aX^2+bX+c,${physicsParams.regressionC.toFixed(6)}\n`;
+
+  // ファイル名生成
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mi = String(now.getMinutes()).padStart(2, "0");
+  const filename = `longjump-com_${yyyy}${mm}${dd}-${hh}${mi}.csv`;
+
+  // CSVダウンロード
+  const blob = new Blob([csv], { type: "text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  console.log("CSV exported:", filename);
+}
+
+physicsResultsCancel.addEventListener("click", () => {
+  closePhysicsResultsDialog();
+  // Physics Parametersは保持（画像描画に使用するため）
+  // 画像保存ダイアログを開く
+  openSaveImgDialog();
+});
+
+// 親ウィンドウでメッセージを受信
+window.addEventListener('message', (event) => {
+  if (event.data.type === 'update-markers') {
+    // 拡大ウィンドウからの座標更新を受信
+    markers = event.data.markers;
+    redrawCanvas();
+    console.log('Markers updated from zoom window');
+
+    // 親ウィンドウ側の変更を拡大ウィンドウにも反映（無限ループ防止のため、元が拡大ウィンドウでない場合のみ）
+    // この場合は拡大ウィンドウからの更新なので通知しない
+  } else if (event.data.type === 'confirm-and-next') {
+    // 拡大ウィンドウのEnterキーで確定
+    confirmCurrentPoseAndStartNext();
+    console.log('Confirmed from zoom window');
+  } else if (event.data.type === 'zoom-window-closed') {
+    // 拡大ウィンドウが閉じられた
+    zoomWindow = null;
+    console.log('Zoom window closed');
+  }
+});
+
+// ======================= 拡大ウィンドウ管理 =======================
+let zoomWindow = null;
+let lastSelectedRect = null;
+
+// ======================= Shift+Enterで拡大ウィンドウを開く =======================
+document.addEventListener("keydown", (e) => {
+  console.log('Key pressed:', e.key, 'Shift:', e.shiftKey, 'Mode:', mode, 'Markers:', markers.length, 'lastSelectedRect:', lastSelectedRect);
+
+  if (e.key === "Enter") {
+    // ダイアログが開いている場合は無視
+    if (saveImgDialog && saveImgDialog.style.display === "flex") {
+      console.log('Dialog is open, ignoring Enter');
+      return;
+    }
+
+    if (mode === "edit" && markers.length > 0) {
+      e.preventDefault();
+
+      // Shift+Enterの場合は拡大ウィンドウを開く
+      if (e.shiftKey && lastSelectedRect) {
+        console.log('Shift+Enter detected, calling openZoomWindow');
+        openZoomWindow();
+      } else if (!zoomWindow || zoomWindow.closed) {
+        // 拡大ウィンドウが開いていない場合のみ確定処理を実行
+        console.log('Enter only, calling confirmCurrentPoseAndStartNext');
+        confirmCurrentPoseAndStartNext();
+      } else {
+        console.log('Zoom window is open, ignoring Enter in main window');
+      }
+    } else {
+      console.log('Condition not met - mode:', mode, 'markers.length:', markers.length);
+    }
+  }
+});
+
+// ======================= 拡大ウィンドウ機能 =======================
+function openZoomWindow() {
+  console.log('openZoomWindow called', { lastSelectedRect, img });
+  if (!lastSelectedRect || !img) {
+    console.log('Early return: lastSelectedRect or img is missing');
+    return;
+  }
+
+  const rect = lastSelectedRect;
+  const zoomFactor = 2;
+  const windowWidth = rect.w * zoomFactor;
+  const windowHeight = rect.h * zoomFactor;
+
+  // 矩形部分の画像を切り出してBase64エンコード（マーカーなしの元画像のみ）
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = rect.w;
+  tempCanvas.height = rect.h;
+  const tempCtx = tempCanvas.getContext('2d');
+
+  // 元画像から矩形部分を切り出す（マーカーなし）
+  tempCtx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+  const croppedImageData = tempCanvas.toDataURL();
+
+  // 現在のマーカー情報を矩形座標系に変換
+  const markersInRect = markers.map(m => ({
+    name: m.name,
+    x: m.x - rect.x,
+    y: m.y - rect.y,
+    kind: m.kind,
+    estimated: m.estimated,
+    needsBlink: m.needsBlink
+  }));
+
+  // ウィンドウパラメータ
+  const features = `width=${windowWidth},height=${windowHeight},resizable=no,scrollbars=no,location=no,menubar=no,toolbar=no,status=no`;
+
+  // 新しいウィンドウを開く
+  zoomWindow = window.open('', 'ZoomWindow', features);
+
+  if (!zoomWindow) {
+    alert('ポップアップがブロックされました。ブラウザの設定でポップアップを許可してください。');
+    return;
+  }
+
+  // 拡大ウィンドウのHTML内容を生成
+  const htmlContent = generateZoomWindowHTML(croppedImageData, markersInRect, rect, zoomFactor);
+  zoomWindow.document.write(htmlContent);
+  zoomWindow.document.close();
+
+  console.log('Zoom window opened');
+}
+
+function generateZoomWindowHTML(imageData, markersData, originalRect, zoomFactor) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Zoomed View</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: Arial, sans-serif;
+    }
+    #zoomCanvas {
+      display: block;
+      cursor: default;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="zoomCanvas"></canvas>
+
+  <sc` + `ript>
+    const zoomFactor = ${zoomFactor};
+    const originalRect = ${JSON.stringify(originalRect)};
+    let markers = ${JSON.stringify(markersData)};
+    let draggingIndex = -1;
+    let blinkOn = true;
+
+    const canvas = document.getElementById('zoomCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width * zoomFactor;
+      canvas.height = img.height * zoomFactor;
+      redraw();
+    };
+    img.src = '${imageData}';
+
+    setInterval(() => {
+      blinkOn = !blinkOn;
+      redraw();
+    }, 500);
+
+    // 親ウィンドウからのマーカー更新を受信
+    window.addEventListener('message', (event) => {
+      if (event.data.type === 'update-zoom-markers') {
+        markers = event.data.markers.map(m => ({
+          name: m.name,
+          x: m.x - originalRect.x,
+          y: m.y - originalRect.y,
+          kind: m.kind,
+          estimated: m.estimated,
+          needsBlink: m.needsBlink
+        }));
+        redraw();
+      }
+    });
+
+    function redraw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      markers.forEach(m => {
+        const x = m.x * zoomFactor;
+        const y = m.y * zoomFactor;
+        const style = getMarkerStyle(m.name);
+
+        if (m.estimated) {
+          if (m.needsBlink && blinkOn) {
+            drawMarker(x, y, "cyan", style.shape);
+            drawLabel(m.name, x, y, "cyan");
+          } else if (!m.needsBlink) {
+            drawMarker(x, y, "cyan", style.shape);
+            drawLabel(m.name, x, y, "cyan");
+          }
+        } else {
+          drawMarker(x, y, style.color, style.shape);
+          drawLabel(m.name, x, y, style.color);
+        }
+      });
+    }
+
+    function drawMarker(x, y, color, shape) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      if (shape === "cross") {
+        ctx.beginPath();
+        ctx.moveTo(x - 8, y - 8);
+        ctx.lineTo(x + 8, y + 8);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x + 8, y - 8);
+        ctx.lineTo(x - 8, y + 8);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(x - 8, y);
+        ctx.lineTo(x + 8, y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x, y - 8);
+        ctx.lineTo(x, y + 8);
+        ctx.stroke();
+      }
+    }
+
+    function drawLabel(name, x, y, color) {
+      const label = labelForKeypoint(name);
+      if (label) {
+        ctx.fillStyle = color;
+        ctx.font = "bold 12px sans-serif";
+        ctx.fillText(label, x + 10, y + 4);
+      }
+    }
+
+    function getMarkerStyle(jointName) {
+      const isLeftSide = jointName.startsWith("left_");
+      const isLowerBody = jointName.includes("hip") || jointName.includes("knee") || jointName.includes("ankle");
+      const color = isLeftSide ? "lime" : "red";
+      const shape = isLowerBody ? "cross" : "plus";
+      return { color, shape };
+    }
+
+    function labelForKeypoint(name) {
+      const labels = {
+        "left_ear": "L-Ear", "right_ear": "R-Ear",
+        "left_shoulder": "L-Shoulder", "right_shoulder": "R-Shoulder",
+        "left_elbow": "L-Elbow", "right_elbow": "R-Elbow",
+        "left_wrist": "L-Wrist", "right_wrist": "R-Wrist",
+        "left_hip": "L-Hip", "right_hip": "R-Hip",
+        "left_knee": "L-Knee", "right_knee": "R-Knee",
+        "left_ankle": "L-Ankle", "right_ankle": "R-Ankle"
+      };
+      return labels[name] || "";
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      draggingIndex = -1;
+      markers.forEach((m, i) => {
+        const mx = m.x * zoomFactor;
+        const my = m.y * zoomFactor;
+        if (Math.abs(mx - x) < 15 && Math.abs(my - y) < 15) {
+          draggingIndex = i;
+          if (m.estimated) m.needsBlink = false;
+        }
+      });
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (draggingIndex >= 0) {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        markers[draggingIndex].x = x / zoomFactor;
+        markers[draggingIndex].y = y / zoomFactor;
+        if (markers[draggingIndex].estimated) {
+          markers[draggingIndex].needsBlink = false;
+        }
+        notifyParent();
+        redraw();
+      }
+    });
+
+    canvas.addEventListener('mouseup', () => { draggingIndex = -1; });
+    canvas.addEventListener('mouseleave', () => { draggingIndex = -1; });
+
+    function notifyParent() {
+      if (window.opener) {
+        const absoluteMarkers = markers.map(m => ({
+          name: m.name,
+          x: m.x + originalRect.x,
+          y: m.y + originalRect.y,
+          kind: m.kind,
+          estimated: m.estimated,
+          needsBlink: m.needsBlink
+        }));
+        window.opener.postMessage({ type: 'update-markers', markers: absoluteMarkers }, '*');
+      }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (window.opener) {
+          window.opener.postMessage({ type: 'confirm-and-next' }, '*');
+        }
+        window.close();
+      }
+    });
+
+    window.addEventListener('beforeunload', () => {
+      if (window.opener) {
+        window.opener.postMessage({ type: 'zoom-window-closed' }, '*');
+      }
+    });
+  </sc` + `ript>
+</body>
+</html>`;
+}
+
+console.log('Application initialized successfully');
+
+} // end of initializeApp()
+
+
+console.log("Script loaded completely");
+</script>
+
+<script>
+// 右クリック禁止（Canvas 操作には影響なし）
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+// 特定のショートカットだけ無効化
+document.addEventListener('keydown', e => {
+  // Ctrl+S（保存）
+  if (e.ctrlKey && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+  }
+
+  // Ctrl+P（印刷）
+  if (e.ctrlKey && e.key.toLowerCase() === 'p') {
+    e.preventDefault();
+  }
+
+  // Ctrl+Shift+I（DevTools）
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'i') {
+    e.preventDefault();
+  }
+
+  // Ctrl+Shift+C（要素検証）
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'c') {
+    e.preventDefault();
+  }
+
+  // Ctrl+Shift+J（DevTools Console）
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'j') {
+    e.preventDefault();
+  }
+
+  // F12（DevTools）
+  if (e.key === 'F12') {
+    e.preventDefault();
+  }
+});
+</script>
+
+</body>
+</html>
