@@ -2248,7 +2248,7 @@ function exportCSV(physicsParams) {
   csv += "\n";
   csv += "Physics Parameters\n";
   csv += `COM height at takeoff (m),${physicsParams.takeoffComHeight.toFixed(3)}\n`;
-  csv += `COM Velocity at takeoff (m/s),${physicsParams.velocity.toFixed(2)}\n`;
+  csv += `COM velocity at takeoff (m/s),${physicsParams.velocity.toFixed(2)}\n`;
   csv += `COM jumping angle at takeoff (deg.),${physicsParams.jumpingAngle.toFixed(1)}\n`;
   csv += `Interval of afterimages (s),${physicsParams.frameInterval.toFixed(2)}\n`;
   csv += `a of Y=aX^2+bX+c,${physicsParams.regressionA.toExponential(6)}\n`;
